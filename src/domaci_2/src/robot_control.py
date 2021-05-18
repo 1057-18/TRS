@@ -5,6 +5,7 @@ import rospy
 import std_msgs
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from tf.transformations import euler_from_quaternion
 import sys, select, os
 if os.name == 'nt':
     import msvcrt
@@ -87,6 +88,12 @@ def check_angular_limit_velocity(vel):
 
     return vel
 
+def rotation_matrix(theta):
+    return  np.array([[np.math.cos(theta), np.math.sin(theta), 0], [-np.math.sin(theta), np.math.cos(theta), 0], [0, 0, 1]])
+
+def translation_matrix(tx, ty):
+    return np.array([[1, 0, tx], [0, 1, ty], [0, 0, 1]])
+
 def run_teleop():
     if os.name != 'nt':
         settings = termios.tcgetattr(sys.stdin)
@@ -156,31 +163,50 @@ def run_teleop():
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
 
 def callback(odom, args):
-    target_x = args[0]
-    target_y = args[1]
-    target_theta = args[2]
+    global_x = args[0]
+    global_y = args[1]
+    
+    h1 = True
+    sign = None
 
     pub = rospy.Publisher('cmd_vel', Twist, queue_size=10)
     os.system('cls' if os.name == 'nt' else 'clear')
-    print(f'current position: x={np.round(odom.pose.pose.position.x, 4)}, y={np.round(odom.pose.pose.position.y, 4)}')
-    print(f'current orientation: a={np.round(odom.pose.pose.orientation.x, 4)}, b={np.round(odom.pose.pose.orientation.y, 4)}, c={np.round(odom.pose.pose.orientation.z, 4)}')
     
     x = odom.pose.pose.position.x
     y = odom.pose.pose.position.y
-    theta = odom.pose.pose.orientation.z
+   
+    orien = odom.pose.pose.orientation
+    (roll, pitch, theta) = euler_from_quaternion([orien.x, orien.y, orien.z, orien.w]) 
     
-    delta_x = target_x - x
-    delta_y = target_y - y
+    print(f'current position: x={np.round(odom.pose.pose.position.x, 4)}, y={np.round(odom.pose.pose.position.y, 4)}')
+    print(f'current orientation: theta={theta}')
 
-    rho = (delta_x**2 + delta_y**2)**1/2
-    alpha = -theta + np.arctan(delta_y/delta_x) 
-    beta = target_theta
+    R = rotation_matrix(theta)
+    T = translation_matrix(-x, -y)
+    W = np.dot(R, T)
+    coordinates = np.dot(W, np.array([[global_x], [global_y], [1]]))
+    
+    local_x = coordinates[0][0]
+    local_y = coordinates[1][0]
 
-    k_rho = 1
-    k_alpha = 2
-    k_beta = -1
+    rho = (local_x**2 + local_y**2)**1/2
+    gamma = np.arctan(local_y/local_x)
+    alpha = -theta + gamma
+    beta = -theta - alpha
 
-    v = k_rho * rho 
+    k_rho = 3
+    k_alpha = 4
+    k_beta = -6
+
+    if h1:
+        if local_x >= 0:
+            h1 = False
+            sign = 1
+        else:
+            h1 = False
+            sign = -1
+
+    v = sign * k_rho * rho
     w = k_alpha * alpha + k_beta * beta
 
     twist = Twist()
@@ -197,11 +223,10 @@ def callback(odom, args):
 
 def run_controller():
     os.system('cls' if os.name == 'nt' else 'clear')
-    target = input('Enter target coordinates and orientation (x y theta): ').split(' ')
+    target = input('Enter target coordinates: ').split(' ')
     x = float(target[0])
     y = float(target[1])
-    theta = float(target[2])
-    sub = rospy.Subscriber('odom', Odometry, callback, (x, y, theta))
+    sub = rospy.Subscriber('odom', Odometry, callback, (x, y))
     rospy.spin()
 
 def choose_control_regimen():
